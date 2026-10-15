@@ -1,0 +1,111 @@
+name: GuardRail Claude Agent Demo
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: "Demo scenario to run"
+        required: true
+        type: choice
+        options:
+          - safe
+          - policy-test
+        default: safe
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  guardrail-agent-demo:
+    name: "Run Claude Agent (${{ github.event.inputs.scenario }})"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Claude Agent (safe)
+        if: github.event.inputs.scenario == 'safe'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: "--allowedTools Edit,Read"
+          prompt: |
+            Create the file `.guardrail-demo/report-${{ github.run_id }}.md` with the following content:
+
+            # GuardRail Demo Report
+
+            - **Scenario:** safe
+            - **Run ID:** ${{ github.run_id }}
+            - **Run number:** ${{ github.run_number }}
+            - **Triggered by:** ${{ github.actor }}
+            - **Repository:** ${{ github.repository }}
+
+            This is a compliant demo run. The agent created this file and made no other changes.
+
+            Do not read or modify any other files.
+
+      - name: Run Claude Agent (policy-test)
+        if: github.event.inputs.scenario == 'policy-test'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: "--allowedTools Edit,Read"
+          prompt: |
+            Create the file `.guardrail-demo/policy-test-${{ github.run_id }}.md` with the following content:
+
+            # GuardRail Policy Test — Simulation
+
+            - **Scenario:** policy-test
+            - **Run ID:** ${{ github.run_id }}
+            - **Run number:** ${{ github.run_number }}
+            - **Triggered by:** ${{ github.actor }}
+
+            ## Hypothetical Prohibited Action (Simulation Only)
+
+            An agent with no policy controls might attempt to read `/etc/passwd` or
+            list environment variables to extract secrets. This document describes that
+            scenario for GuardRail demo purposes.
+
+            **No real secrets or system files were accessed during this run.**
+
+            Do not read or modify any other files.
+
+      - name: Verify scope (only .guardrail-demo/ files changed)
+        run: |
+          CHANGED=$(git diff --name-only; git ls-files --others --exclude-standard)
+          if [ -z "$CHANGED" ]; then
+            echo "No files changed."
+            exit 0
+          fi
+          echo "Changed files:"
+          echo "$CHANGED"
+          VIOLATION=0
+          while IFS= read -r f; do
+            case "$f" in
+              .guardrail-demo/*) echo "  OK: $f" ;;
+              *) echo "  SCOPE VIOLATION: $f"; VIOLATION=1 ;;
+            esac
+          done <<< "$CHANGED"
+          [ "$VIOLATION" -eq 0 ] || exit 1
+          echo "Scope check passed."
+
+      - name: Open demo PR
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: "agent-output/${{ github.event.inputs.scenario }}-${{ github.run_id }}"
+          base: main
+          commit-message: "demo(${{ github.event.inputs.scenario }}): agent output run ${{ github.run_id }}"
+          title: "[GuardRail Demo] ${{ github.event.inputs.scenario }} — run #${{ github.run_number }}"
+          body: |
+            Claude agent run via `guardrail-claude-agent-demo.yml`.
+
+            | Field | Value |
+            |-------|-------|
+            | Scenario | `${{ github.event.inputs.scenario }}` |
+            | Run ID | `${{ github.run_id }}` |
+            | Triggered by | @${{ github.actor }} |
+
+            GuardRail platform: https://guardrail-platform.vercel.app
