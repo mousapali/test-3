@@ -29,7 +29,7 @@ jobs:
         if: github.event.inputs.scenario == 'safe'
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.ACTION }}
           claude_args: "--allowedTools Edit,Read"
           prompt: |
             Create the file `.guardrail-demo/report-${{ github.run_id }}.md` with the following content:
@@ -50,7 +50,7 @@ jobs:
         if: github.event.inputs.scenario == 'policy-test'
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.ACTION }}
           claude_args: "--allowedTools Edit,Read"
           prompt: |
             Create the file `.guardrail-demo/policy-test-${{ github.run_id }}.md` with the following content:
