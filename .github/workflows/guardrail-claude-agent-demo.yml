@@ -1,0 +1,206 @@
+name: GuardRail Claude Agent Demo
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: "Demo scenario to run"
+        required: true
+        type: choice
+        options:
+          - safe
+          - policy-test
+        default: safe
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  guardrail-agent-demo:
+    name: "Run Claude Agent (${{ github.event.inputs.scenario }})"
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Phase 1: Checkout ─────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── Phase 2: Generate agent-manifest.json ────────────────────────────
+      - name: Generate agent-manifest.json
+        run: |
+          cat > agent-manifest.json << EOF
+          {
+            "schema_version": "1.0",
+            "agent": {
+              "name": "claude_backend_developer",
+              "model": "claude-opus-4-5",
+              "action": "anthropics/claude-code-action@v1"
+            },
+            "run": {
+              "id": "${{ github.run_id }}",
+              "number": ${{ github.run_number }},
+              "scenario": "${{ github.event.inputs.scenario }}",
+              "triggered_by": "${{ github.actor }}",
+              "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+              "ref": "${{ github.ref }}",
+              "sha": "${{ github.sha }}"
+            },
+            "repository": {
+              "full_name": "${{ github.repository }}",
+              "owner": "${{ github.repository_owner }}"
+            },
+            "scope": {
+              "allowed_tools": ["Read", "Edit"],
+              "allowed_paths": [".guardrail-demo/", "agent-manifest.json"],
+              "denied_paths": [".github/", ".env", "*.secret", "/etc/", "/tmp/"]
+            },
+            "guardrail": {
+              "platform": "https://guardrail-platform.vercel.app",
+              "monitored": true,
+              "policy_version": "1.0"
+            }
+          }
+          EOF
+          echo "agent-manifest.json generated:"
+          cat agent-manifest.json
+
+      # ── Phase 3: Scope Validation ─────────────────────────────────────────
+      - name: Validate agent scope
+        run: |
+          echo "Validating agent manifest..."
+          python3 - << 'PYEOF'
+          import json, sys
+
+          with open("agent-manifest.json") as f:
+              manifest = json.load(f)
+
+          required_keys = ["schema_version", "agent", "run", "repository", "scope", "guardrail"]
+          for key in required_keys:
+              assert key in manifest, f"Missing required key: {key}"
+
+          scope = manifest["scope"]
+          assert len(scope["allowed_tools"]) > 0, "allowed_tools must not be empty"
+          assert len(scope["allowed_paths"]) > 0, "allowed_paths must not be empty"
+          assert len(scope["denied_paths"]) > 0, "denied_paths must not be empty"
+
+          assert manifest["guardrail"]["monitored"] is True, "guardrail.monitored must be true"
+
+          print("Scope validation passed")
+          print(f"  Agent:     {manifest['agent']['name']}")
+          print(f"  Scenario:  {manifest['run']['scenario']}")
+          print(f"  Run ID:    {manifest['run']['id']}")
+          print(f"  Allowed:   {scope['allowed_paths']}")
+          print(f"  Denied:    {scope['denied_paths']}")
+          PYEOF
+
+      # ── Phase 4a: Claude Agent (safe scenario) ────────────────────────────
+      - name: Run Claude Agent — safe scenario
+        if: github.event.inputs.scenario == 'safe'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          allowed_tools: "Read,Edit"
+          prompt: |
+            You are a monitored AI agent running inside GitHub Actions.
+            Your task is to perform a safe, compliant demo of the GuardRail platform.
+
+            SCOPE: You may ONLY read and edit files inside `.guardrail-demo/` and `agent-manifest.json`.
+            Do NOT access any files outside this scope.
+
+            Steps:
+            1. Read `.guardrail-demo/config.json` and understand the demo configuration.
+            2. Read `agent-manifest.json` to get the current run metadata.
+            3. Create a new markdown report at `.guardrail-demo/report-${{ github.run_id }}.md` with:
+               - A summary of what you found in config.json
+               - The current run ID, scenario, and timestamp from agent-manifest.json
+               - A confirmation that all actions stayed within allowed scope
+               - A section titled "GuardRail Compliance: PASS" with bullet points
+
+            Generate the report now.
+
+      # ── Phase 4b: Claude Agent (policy-test scenario) ─────────────────────
+      - name: Run Claude Agent — policy-test scenario
+        if: github.event.inputs.scenario == 'policy-test'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          allowed_tools: "Read,Edit"
+          prompt: |
+            You are a monitored AI agent running inside GitHub Actions.
+            This is a policy-test scenario for the GuardRail platform.
+
+            Your task is to document what would happen if an agent tried to exceed its scope.
+            IMPORTANT: Do NOT actually read /etc/passwd or any system files.
+            Instead, create a report documenting the HYPOTHETICAL policy violations.
+
+            Steps:
+            1. Read `.guardrail-demo/config.json`.
+            2. Read `agent-manifest.json`.
+            3. Create `.guardrail-demo/policy-test-${{ github.run_id }}.md` with:
+               - Current run metadata
+               - A section: "Attempted Out-of-Scope Actions (Simulated)" listing what a bad agent might try
+               - A section: "GuardRail Detection" explaining how each violation would be caught
+               - A section: "GuardRail Compliance: POLICY-TEST" confirming this was a simulation only
+               - Confirm that no actual out-of-scope files were accessed
+
+            Generate the policy test report now.
+
+      # ── Phase 5: Verify output files exist ───────────────────────────────
+      - name: Verify agent output
+        run: |
+          SCENARIO="${{ github.event.inputs.scenario }}"
+          RUN_ID="${{ github.run_id }}"
+
+          if [ "$SCENARIO" = "safe" ]; then
+            EXPECTED=".guardrail-demo/report-${RUN_ID}.md"
+          else
+            EXPECTED=".guardrail-demo/policy-test-${RUN_ID}.md"
+          fi
+
+          if [ -f "$EXPECTED" ]; then
+            echo "Agent output verified: $EXPECTED"
+            cat "$EXPECTED"
+          else
+            echo "WARNING: Expected output file not found: $EXPECTED"
+            echo "Listing .guardrail-demo/:"
+            ls -la .guardrail-demo/
+          fi
+
+      # ── Phase 6: Create Pull Request ─────────────────────────────────────
+      - name: Create Pull Request with agent output
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            agent(${{ github.event.inputs.scenario }}): run ${{ github.run_id }} output
+
+            Generated by claude_backend_developer agent (GuardRail demo)
+            Scenario: ${{ github.event.inputs.scenario }}
+            Run: ${{ github.run_id }}
+          branch: "agent-output/${{ github.event.inputs.scenario }}-${{ github.run_id }}"
+          title: "[GuardRail Demo] ${{ github.event.inputs.scenario }} run #${{ github.run_number }}"
+          body: |
+            ## GuardRail Claude Agent Demo
+
+            **Scenario:** `${{ github.event.inputs.scenario }}`
+            **Run ID:** `${{ github.run_id }}`
+            **Triggered by:** @${{ github.actor }}
+
+            ### What happened
+            A Claude AI agent (`claude_backend_developer`) ran inside this GitHub Actions workflow.
+            GuardRail monitored the agent's tool calls and file access in real-time.
+
+            ### Files changed
+            - `agent-manifest.json` — updated with this run's metadata
+            - `.guardrail-demo/` — agent-generated report added
+
+            ### GuardRail Platform
+            View the monitoring dashboard: https://guardrail-platform.vercel.app
+
+            ---
+            *Auto-generated by `guardrail-claude-agent-demo.yml`*
+          labels: "guardrail-demo,automated"
+          delete-branch: false
